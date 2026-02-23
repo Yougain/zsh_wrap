@@ -1,0 +1,98 @@
+#!/bin/env ruby
+
+require "pty"
+require "io/console"
+
+r, w = IO.pipe
+
+STDERR.reopen w
+w.close
+
+
+ChildWrapperPID = $$
+
+
+fork do
+    begin
+        loop do
+            IO.select [r]
+            buff = r.readpartial(4096)
+            File.open "/tmp/test.zsh.log", "a" do |f|
+                f.write "#{Time.now.strftime("%H:%M:%S.%L")}(wrapper)[#{ChildWrapperPID}] #{buff}"
+            end
+        end
+    rescue => e
+        File.open "/tmp/test.zsh.log", "a" do |f|
+            f.write "#{Time.now.strftime("%H:%M:%S.%L")}(logger)[$$] ERROR: #{e.message}\n"
+        end
+    end
+end
+
+
+tty_in  = IO.for_fd(Integer(ENV.fetch("TTY_IN_FD")))
+wsz = tty_in.winsize
+
+tty_out = IO.for_fd(Integer(ENV.fetch("TTY_OUT_FD")), "w")
+master, slave = PTY.open
+master.winsize = wsz
+
+
+
+trap :WINCH do
+    STDERR.puts "Received WINCH signal to #{$$}"
+    begin
+        new_wsz = tty_in.winsize
+        if new_wsz != wsz
+            wsz = new_wsz
+            if master && !master.closed?
+                master.winsize = wsz
+            end
+        end
+    rescue => e
+        STDERR.puts "trap WINCH error #{$$}, ERROR: #{e.message}"
+    end
+end
+
+IO.write(ARGV[0], "#{$$} #{slave.path}\n")
+slave.close
+orig = tty_in.raw!(intr: true)
+trap("TERM"){ exit 0 }
+trap("INT"){ 
+    STDERR.puts "Received INT signal to #{$$}"
+    master.write "\x03" # Ctrl-C
+}
+STDERR.puts "Child process started with PID #{Process.pid}"
+start_time = Time.now
+begin
+    loop do
+        rs, = IO.select([tty_in, master], nil, nil)
+        if rs.include?(tty_in)
+            d = tty_in.read_nonblock(4096, exception: false)
+            break if d.nil?
+            master.write(d) unless d == :wait_readable
+        end
+        if rs.include?(master)
+            d = master.read_nonblock(4096, exception: false)
+            break if d.nil?
+            unless d == :wait_readable
+                # 加工ポイント
+                d = d.gsub("ERROR", "\e[31mERROR\e[0m")
+                STDERR.write(d.inspect + "\n")
+                STDERR.flush
+                tty_out.write(d)
+                tty_out.flush
+            end
+        end
+    end
+rescue Errno::EIO
+# slave 側が閉じた時の通常終了
+    if Time.now - start_time < 10
+        sleep 0.1
+        retry
+    end
+ensure
+    STDERR.puts "Child process exited (#{Process.pid})"
+    tty_in.cooked! rescue nil
+    master.close rescue nil
+end
+
