@@ -57,31 +57,162 @@ IO.write(ARGV[0], "#{$$} #{slave.path}\n")
 slave.close
 orig = tty_in.raw!(intr: true)
 trap("TERM"){ exit 0 }
-trap("INT"){ 
+trap :INT do 
     STDERR.puts "Received INT signal to #{$$}"
     master.write "\x03" # Ctrl-C
-}
+end
+trap :TSTP do
+    STDERR.puts "Received TSTP signal to #{$$}"
+    master.write "\x1A" # Ctrl-Z
+end
+trap :QUIT do
+    STDERR.puts "Received QUIT signal to #{$$}"
+    master.write "\x1C" # Ctrl-\
+end
+
+
+class Subst
+    attr_reader :file, :time
+    def initialize file
+        @file = file
+        @time = Time.now
+        @@filters ||= {}
+        @@filters[file] = self
+    end
+    def self.gsub! str, left
+        @@filters ||= {}
+        str.insert 0, left
+        left.clear
+        @@filters.values.sort_by{ |filter| filter.time }.reverse_each do |filter|
+            filter.gsub str, left
+        end
+    end
+end
+
+
+class RbSubst
+    def initialize file, filter
+        super file
+        @filter = filter
+        instance_eval filter
+    end
+end
+
+
+def registerFilter file
+    filter = IO.read(file).strip
+    begin
+        STDERR.puts "Registering filter: #{filter.inspect} from file: #{file}"
+        if file =~ /\.rb$/
+            RbSubst.new file, filter
+            return
+        end
+    rescue ArgumentError => e
+        STDERR.puts "Error registering filter from file #{file}: #{e.message}"
+    rescue RegexpError => e
+        STDERR.puts "Invalid regex in filter from file #{file}: #{e.message}"
+    end
+end
+
+
+trap :USR1 do
+    STDERR.puts "Received USR1 signal to #{$$}"
+    addFilter
+end
+
+def split_valid_utf8_and_tail_with_colored_invalid(buf)
+    bytes = buf.b.bytes
+    out = +""
+    i = 0
+
+    while i < bytes.length
+        b0 = bytes[i]
+
+        if b0 <= 0x7F
+            out << b0
+            i += 1
+            next
+        end
+
+        expected_len = case b0
+                       when 0xC2..0xDF
+                           2
+                       when 0xE0..0xEF
+                           3
+                       when 0xF0..0xF4
+                           4
+                       else
+                           nil
+                       end
+
+        if expected_len.nil?
+            out << format("\e[32;45m\\x%02x\e[0m", b0)
+            i += 1
+            next
+        end
+
+        remain = bytes.length - i
+        if remain < expected_len
+            tail = bytes[i, remain].pack("C*").b
+            return [out.force_encoding(Encoding::UTF_8), tail]
+        end
+
+        seq = bytes[i, expected_len]
+        unless seq[1..].all? { |b| (b & 0xC0) == 0x80 }
+            out << format("\e[32;45m\\x%02x\e[0m", b0)
+            i += 1
+            next
+        end
+
+        ch = seq.pack("C*").force_encoding(Encoding::UTF_8)
+        if ch.valid_encoding?
+            out << ch
+            i += expected_len
+        else
+            out << format("\e[32;45m\\x%02x\e[0m", b0)
+            i += 1
+        end
+    end
+
+    [out.force_encoding(Encoding::UTF_8), "".b]
+end
+
+
 STDERR.puts "Child process started with PID #{Process.pid}"
 start_time = Time.now
 begin
+    uLeft = ""
+    mLeft = "".b
+    buff = "".b
+    readers = [tty_in, master]
     loop do
-        rs, = IO.select([tty_in, master], nil, nil)
+        rs, = IO.select(readers, nil, nil)
         if rs.include?(tty_in)
-            d = tty_in.read_nonblock(4096, exception: false)
-            break if d.nil?
-            master.write(d) unless d == :wait_readable
+            begin
+                tty_in.readpartial(4096, buff)
+            rescue EOFError
+                readers.delete(tty_in)
+                next
+            end
+            master.write buff
         end
         if rs.include?(master)
-            d = master.read_nonblock(4096, exception: false)
-            break if d.nil?
-            unless d == :wait_readable
-                # 加工ポイント
-                d = d.gsub("ERROR", "\e[31mERROR\e[0m")
-                STDERR.write(d.inspect + "\n")
-                STDERR.flush
-                tty_out.write(d)
-                tty_out.flush
+            begin
+                master.readpartial(4096, buff)
+            rescue EOFError
+                readers.delete(master)
+                next
             end
+            d, mLeft = split_valid_utf8_and_tail_with_colored_invalid(mLeft + buff.b)
+            # 加工ポイント
+            #d = d.gsub("ERROR", "\e[31mERROR\e[0m")
+            STDERR.write(d.inspect + "\n")
+            if Subst.gsub! d, uLeft
+                STDERR.write("Substitution applied: " + d.inspect + "\n")
+            end
+            STDERR.flush
+            tty_out.write(d)
+            tty_out.flush
         end
     end
 rescue Errno::EIO

@@ -7,9 +7,11 @@ zrb_filter_on() {
 
   exec {ZRB_ORIG_IN}<&0 {ZRB_ORIG_OUT}>&1 {ZRB_ORIG_ERR}>&2
 
-  ZRB_INFO_FILE="$(mktemp)"
+  ZRB_INFO_FILE="$(temp_path zrb_info)"
+  ZRB_FILTER_DIR="$(temp_path zrb_filter_dir)"
+  mkdir -p "$ZRB_FILTER_DIR"
 
-  TTY_IN_FD="$ZRB_ORIG_IN" TTY_OUT_FD="$ZRB_ORIG_OUT" ZSHPID=$$ zsh_wrap "$ZRB_INFO_FILE" &
+  TTY_IN_FD="$ZRB_ORIG_IN" TTY_OUT_FD="$ZRB_ORIG_OUT" ZSHPID=$$ zsh_wrap "$ZRB_INFO_FILE" "$ZRB_FILTER_DIR" &
 
   local info=""
   for _ in {1..200}; do
@@ -18,8 +20,8 @@ zrb_filter_on() {
   done
   [[ -z "$info" ]] && { echo "failed to get pty path" >&2; return 1; }
 
-    local pts_path="${info#* }"
-    ZRB_FILTER_PID="${info%% *}"
+  local pts_path="${info#* }"
+  ZRB_FILTER_PID="${info%% *}"
 
   exec <"$pts_path" >"$pts_path" 2>&1
 }
