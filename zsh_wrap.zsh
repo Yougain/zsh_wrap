@@ -5,6 +5,9 @@ zrb_filter_on() {
 
   [[ -n "$ZRB_FILTER_PID" ]] && return 0
 
+  ZRB_ORIG_TTY="$(readlink /proc/$$/fd/0 2>/dev/null)"
+  [[ -n "$ZRB_ORIG_TTY" && -c "$ZRB_ORIG_TTY" ]] || unset ZRB_ORIG_TTY
+
   exec {ZRB_ORIG_IN}<&0 {ZRB_ORIG_OUT}>&1 {ZRB_ORIG_ERR}>&2
 
   ZRB_INFO_FILE="$(temp_path zrb_info)"
@@ -28,11 +31,15 @@ zrb_filter_on() {
 
 zrb_filter_off() {
   [[ -z "$ZRB_FILTER_PID" ]] && return 0
-  exec <&$ZRB_ORIG_IN >&$ZRB_ORIG_OUT 2>&$ZRB_ORIG_ERR
+  if [[ -n "$ZRB_ORIG_TTY" && -c "$ZRB_ORIG_TTY" ]]; then
+    exec 0<>"$ZRB_ORIG_TTY" 1>&0 2>&1
+  else
+    exec <&$ZRB_ORIG_IN >&$ZRB_ORIG_OUT 2>&$ZRB_ORIG_ERR
+  fi
   kill "$ZRB_FILTER_PID" 2>/dev/null
   wait "$ZRB_FILTER_PID" 2>/dev/null
   exec {ZRB_ORIG_IN}<&- {ZRB_ORIG_OUT}>&- {ZRB_ORIG_ERR}>&-
-  rm -f -- "$ZRB_INFO_FILE"
-  unset ZRB_FILTER_PID ZRB_ORIG_IN ZRB_ORIG_OUT ZRB_ORIG_ERR ZRB_INFO_FILE
+  rm -f "$ZRB_INFO_FILE"
+  unset ZRB_FILTER_PID ZRB_ORIG_IN ZRB_ORIG_OUT ZRB_ORIG_ERR ZRB_INFO_FILE ZRB_ORIG_TTY
 }
 

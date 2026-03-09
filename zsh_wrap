@@ -205,7 +205,7 @@ begin
             end
             d, mLeft = split_valid_utf8_and_tail_with_colored_invalid(mLeft + buff.b)
             # 加工ポイント
-            #d = d.gsub("ERROR", "\e[31mERROR\e[0m")
+            d = d.gsub("ERROR", "\e[31mERROR\e[0m")
             STDERR.write(d.inspect + "\n")
             if Subst.gsub! d, uLeft
                 STDERR.write("Substitution applied: " + d.inspect + "\n")
