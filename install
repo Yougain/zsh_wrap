@@ -1,0 +1,8 @@
+#!/bin/env bash
+
+. $(dirname $0)/gyi
+
+depends yk_support_for_sh
+
+install zsh_wrap.zsh /etc/zshrc.d
+install zsh_wrap
