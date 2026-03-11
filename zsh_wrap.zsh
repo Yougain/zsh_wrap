@@ -1,4 +1,10 @@
 # ~/.zshrc などに置く
+
+ZRB_FILTER_DIR="$(temp_path zrb_filter_dir)"
+ZRB_CMD_DIR="$(temp_path zrb_cmd_dir)"
+mkdir -p "$ZRB_FILTER_DIR"
+mkdir -p "$ZRB_CMD_DIR"
+
 zrb_filter_on() {
   emulate -L zsh
   setopt local_options no_monitor
@@ -11,10 +17,8 @@ zrb_filter_on() {
   exec {ZRB_ORIG_IN}<&0 {ZRB_ORIG_OUT}>&1 {ZRB_ORIG_ERR}>&2
 
   ZRB_INFO_FILE="$(temp_path zrb_info)"
-  ZRB_FILTER_DIR="$(temp_path zrb_filter_dir)"
-  mkdir -p "$ZRB_FILTER_DIR"
 
-  TTY_IN_FD="$ZRB_ORIG_IN" TTY_OUT_FD="$ZRB_ORIG_OUT" ZSHPID=$$ zsh_wrap "$ZRB_INFO_FILE" "$ZRB_FILTER_DIR" &
+  TTY_IN_FD="$ZRB_ORIG_IN" TTY_OUT_FD="$ZRB_ORIG_OUT" ZSHPID=$$ zsh_wrap "$ZRB_INFO_FILE" "$ZRB_FILTER_DIR" "$ZRB_CMD_DIR" &
 
   local info=""
   for _ in {1..200}; do
@@ -43,3 +47,16 @@ zrb_filter_off() {
   unset ZRB_FILTER_PID ZRB_ORIG_IN ZRB_ORIG_OUT ZRB_ORIG_ERR ZRB_INFO_FILE ZRB_ORIG_TTY
 }
 
+term_on(){
+  [[ -z "$ZRB_FILTER_PID" ]] && return 0
+  echo on > $ZRB_CMD_DIR/cmd
+  kill USR2 $ZRB_FILTER_PID 2>/dev/null
+}
+
+term_off(){
+  [[ -z "$ZRB_FILTER_PID" ]] && return 0
+  echo off > $ZRB_CMD_DIR/cmd
+  kill USR2 $ZRB_FILTER_PID 2>/dev/null
+}
+
+#zrb_filter_on

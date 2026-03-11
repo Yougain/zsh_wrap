@@ -75,26 +75,32 @@ class Subst
     attr_reader :file, :time
     def initialize file
         @file = file
-        @time = Time.now
+        @time = File.mtime file
         @@filters ||= {}
         @@filters[file] = self
     end
     def self.gsub! str, left
         @@filters ||= {}
-        str.insert 0, left
-        left.clear
         @@filters.values.sort_by{ |filter| filter.time }.reverse_each do |filter|
+            STDERR.puts "Applying filter from file: #{filter.file}"
             filter.gsub str, left
         end
     end
 end
 
 
-class RbSubst
+class RbSubst < Subst
     def initialize file, filter
         super file
         @filter = filter
-        instance_eval filter
+        STDERR.puts "instance eval start\n"
+        STDERR.puts "filter = >>>'#{filter}'<<<\n"
+        begin
+            instance_eval filter
+        rescue Exception => e
+            STDERR.puts "Error evaluating filter from file #{file}: #{e.message}"
+        end
+        STDERR.puts "instance eval end\n"
     end
 end
 
@@ -114,10 +120,36 @@ def registerFilter file
     end
 end
 
+FilterDir = ARGV[1]
+CmdDir = ARGV[2]
+
+def addFilter
+    Dir.glob(File.join(FilterDir, "*")).each do |file|
+        next unless File.file?(file)
+        registerFilter file
+    end
+end
+
 
 trap :USR1 do
     STDERR.puts "Received USR1 signal to #{$$}"
     addFilter
+end
+
+$term_on = true
+
+trap :USR2 do
+    STDERR.puts "Received USR2 signal to #{$$}"
+    cmd_file = File.join(CmdDir, "cmd")
+    if File.exist?(cmd_file)
+        cmd = IO.read(cmd_file).strip
+        case cmd
+        when "on"
+            $term_on = true
+        when "off"
+            $term_on = false
+        end
+    end
 end
 
 def split_valid_utf8_and_tail_with_colored_invalid(buf)
@@ -180,39 +212,72 @@ end
 
 STDERR.puts "Child process started with PID #{Process.pid}"
 start_time = Time.now
+addFilter
 begin
-    uLeft = ""
-    mLeft = "".b
+    left = "".b
     buff = "".b
     readers = [tty_in, master]
+    master.set_encoding Encoding::BINARY
     loop do
-        rs, = IO.select(readers, nil, nil)
-        if rs.include?(tty_in)
-            begin
-                tty_in.readpartial(4096, buff)
-            rescue EOFError
-                readers.delete(tty_in)
-                next
+        buff.clear
+        rs, = IO.select(readers, nil, nil, left.empty? ? nil : 0.5)
+        if rs
+            if rs.include?(tty_in)
+                begin
+                    tty_in.readpartial(4096, buff)
+                rescue EOFError
+                    readers.delete(tty_in)
+                    next
+                end
+                master.write buff
             end
-            master.write buff
-        end
-        if rs.include?(master)
-            begin
-                master.readpartial(4096, buff)
-            rescue EOFError
-                readers.delete(master)
-                next
+            if rs.include?(master)
+                begin
+                    master.set_encoding Encoding::BINARY
+                    master.readpartial(4096, buff)
+                    if !$term_on
+                        next
+                    end
+                    while buff.encoding != Encoding::BINARY
+                        buff.force_encoding Encoding::BINARY
+                        STDERR.write("readpartial buff = #{buff.inspect}, #{buff.encoding}\n")
+                    end
+                    buff.force_encoding(Encoding::BINARY)
+                    STDERR.write("readpartial buff = #{buff.inspect}, #{buff.encoding}\n")
+                rescue EOFError
+                    readers.delete(master)
+                    next
+                end
+                #d, mLeft = split_valid_utf8_and_tail_with_colored_invalid(mLeft + buff.b)
+                
+                # 加工ポイント
+                buff.gsub!("ERROR", "\e[31mERROR\e[0m")
+                STDERR.write("gsub ERROR buff = #{buff.inspect}, #{buff.encoding}\n")
+                buff.insert 0, left
+                STDERR.write("buff.insert 0, left: buff = #{buff.inspect}, #{buff.encoding}\n")
+                left.clear
+                STDERR.write("Before substitution\n")
+                STDERR.write("buff = " + buff.inspect + "\n")
+                STDERR.write("left = " + left.inspect + "\n")
+                Subst.gsub! buff, left
+                STDERR.write("Substitution applied\n")
+                STDERR.write("buff = " + buff.inspect + "\n")
+                STDERR.write("left = " + left.inspect + "\n")
+                STDERR.flush
+                tty_out.write(buff)
+                tty_out.flush
             end
-            d, mLeft = split_valid_utf8_and_tail_with_colored_invalid(mLeft + buff.b)
-            # 加工ポイント
-            d = d.gsub("ERROR", "\e[31mERROR\e[0m")
-            STDERR.write(d.inspect + "\n")
-            if Subst.gsub! d, uLeft
-                STDERR.write("Substitution applied: " + d.inspect + "\n")
-            end
-            STDERR.flush
-            tty_out.write(d)
+        else
+            STDERR.write("Time out\n")
+            STDERR.write("buff = " + buff.inspect + "\n")
+            STDERR.write("left = " + left.inspect + "\n")
+            Subst.gsub! buff, left
+            STDERR.write("Time out substitution applied\n")
+            STDERR.write("buff = " + buff.inspect + "\n")
+            STDERR.write("left = " + left.inspect + "\n")
+            tty_out.write(buff)
             tty_out.flush
+            left.clear
         end
     end
 rescue Errno::EIO

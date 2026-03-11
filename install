@@ -4,5 +4,5 @@
 
 depends yk_support_for_sh
 
-install zsh_wrap.zsh /etc/zshrc.d
+install zsh_wrap.zsh /lib/yk_support_for_zsh
 install zsh_wrap
